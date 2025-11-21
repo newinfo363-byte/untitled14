@@ -50,11 +50,17 @@ const server = http.createServer((req, res) => {
     });
 });
 
-server.listen(port, () => {
-    console.log(`🎮 Flying Bird Game is running!`);
-    console.log(`🌐 Open your browser and visit: http://${hostname}:${port}/`);
-    console.log(`\n✨ Game Controls:`);
-    console.log(`   - Click or press SPACE to make the bird fly`);
-    console.log(`   - Avoid the pipes and get the highest score!`);
-});
+// Only start server if not in Vercel environment
+if (process.env.VERCEL !== '1') {
+    server.listen(port, () => {
+        console.log(`🎮 Flying Bird Game is running!`);
+        console.log(`🌐 Open your browser and visit: http://${hostname}:${port}/`);
+        console.log(`\n✨ Game Controls:`);
+        console.log(`   - Click or press SPACE to make the bird fly`);
+        console.log(`   - Avoid the pipes and get the highest score!`);
+    });
+}
+
+// Export for Vercel serverless functions
+module.exports = server;
 
