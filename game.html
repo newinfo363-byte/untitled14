@@ -166,35 +166,36 @@
         const ctx = canvas.getContext('2d');
         const failSound = document.getElementById('failSound');
 
-        // Preload audio
-        failSound.load();
-        failSound.addEventListener('error', (e) => {
-            console.error('Failed to load audio:', e);
-        });
+        // Logical screen size (CSS pixels)
+        const screen = { w: window.innerWidth, h: window.innerHeight };
+        let dpr = window.devicePixelRatio || 1;
 
-        // Set canvas to full window size
-        function resizeCanvas() {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-        }
-        resizeCanvas();
-        window.addEventListener('resize', resizeCanvas);
+        // Game tuning (will be recalculated on resize)
+        let groundHeight = 80;
+        let pipeWidth = 80;
+        let pipeGap = 250;
+        let pipeSpeed = 5;
+        let pipeFrequency = 120;
 
-        // Game state
+        // State
         let gameState = 'start'; // 'start', 'playing', 'gameOver'
         let score = 0;
         let highScore = localStorage.getItem('flyingBirdHighScore') || 0;
+        const pipes = [];
+        const particles = [];
+        let frameCount = 0;
+        let audioUnlocked = false; // ensure we call play on a user gesture to unlock audio
 
-        // Bird properties
+        // Bird
         const bird = {
-            x: canvas.width * 0.25,
-            y: canvas.height / 2,
+            x: 0,
+            y: 0,
             baseWidth: 120,
             baseHeight: 120,
             scale: 1,
             velocity: 0,
-            gravity: 0.5,
-            jump: -9,
+            gravity: 0.55,
+            jump: -10,
             color: '#FFD700',
             wingAngle: 0,
             image: null,
@@ -202,51 +203,112 @@
             aspectRatio: 1
         };
 
-        // Pipe properties
-        const pipes = [];
-        const pipeWidth = 80; // Made pipes a bit wider
-        const pipeGap = 250; // Increased vertical gap from 150 to 250
-        const pipeSpeed = 5;
-        let frameCount = 0;
-        let pipeFrequency = 120; // Increased horizontal gap from 90 to 120 frames
-
-        // Particle effects
-        const particles = [];
-
-        // Update high score display
         document.getElementById('highScoreDisplay').textContent = `Best: ${highScore}`;
 
-        // Load bird image from images folder automatically
+        // Load bird image (relative path so it works when deployed)
         function loadBirdImageFromServer() {
             const img = new Image();
             img.onload = function() {
                 bird.image = img;
                 bird.imageLoaded = true;
                 bird.aspectRatio = img.width / img.height || 1;
-                // Scale sprite relative to screen height (so it feels similar size on any monitor)
-                const targetHeight = canvas.height * 0.18; // 18% of screen height
-                bird.baseHeight = targetHeight;
-                bird.baseWidth = targetHeight * bird.aspectRatio;
-                bird.scale = 1;
-                // Redraw with new image
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                drawBackground();
-                drawBird();
+                recomputeSizes();
             };
             img.onerror = function() {
-                console.log('No bird image found, using default bird');
+                console.log('No bird image found at images/bird.png, using fallback shape.');
+                recomputeSizes();
             };
-            img.src = '/images/bird.png'; // use bird.png explicitly
+            img.src = 'images/bird.png';
         }
-
-        // Try to load image on page load
         loadBirdImageFromServer();
 
+        // Resize and DPR handling for crisp mobile rendering
+        function recomputeSizes() {
+            dpr = window.devicePixelRatio || 1;
+            screen.w = window.innerWidth;
+            screen.h = window.innerHeight;
 
-        // Event listeners
-        document.getElementById('startButton').addEventListener('click', startGame);
-        document.getElementById('restartButton').addEventListener('click', restartGame);
-        canvas.addEventListener('click', handleClick);
+            // Logical ground and spacing relative to screen
+            groundHeight = Math.max(56, Math.round(screen.h * 0.08));
+            pipeGap = Math.max(160, Math.round(screen.h * 0.22));
+            pipeWidth = Math.max(60, Math.round(screen.w * 0.09));
+            pipeSpeed = Math.max(4, Math.round(screen.w * 0.006) ); // scales with width
+            pipeFrequency = Math.max(70, Math.round(120 - (screen.w / 200))); // frames between pipes
+
+            // Bird size relative to screen height
+            const targetHeight = Math.round(screen.h * 0.12);
+            bird.baseHeight = targetHeight;
+            bird.baseWidth = Math.round(targetHeight * bird.aspectRatio);
+
+            // Position bird relative to screen
+            bird.x = Math.round(screen.w * 0.25);
+            bird.y = Math.round(screen.h * 0.5);
+
+            // Resize canvas with DPR
+            canvas.style.width = screen.w + 'px';
+            canvas.style.height = screen.h + 'px';
+            canvas.width = Math.floor(screen.w * dpr);
+            canvas.height = Math.floor(screen.h * dpr);
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        // Initial resize
+        recomputeSizes();
+        window.addEventListener('resize', () => {
+            recomputeSizes();
+            // Keep bird inside view
+            bird.y = Math.min(bird.y, screen.h - groundHeight - (bird.baseHeight * bird.scale) / 2);
+        });
+
+        // Unlock audio on first user gesture (start button or first tap)
+        function unlockAudio() {
+            if (audioUnlocked) return;
+            audioUnlocked = true;
+            // Attempt to play and immediately pause to satisfy mobile/autoplay policies
+            try {
+                const playPromise = failSound.play();
+                if (playPromise && typeof playPromise.then === 'function') {
+                    playPromise.then(() => {
+                        failSound.pause();
+                        failSound.currentTime = 0;
+                    }).catch(() => {
+                        // ignore
+                    });
+                } else {
+                    failSound.pause();
+                    failSound.currentTime = 0;
+                }
+            } catch (err) {
+                // Some browsers might still block but we tried
+                console.warn('Audio unlock attempt failed or blocked:', err);
+            }
+        }
+
+        // Input handling
+        function handleClick() {
+            if (gameState === 'start') {
+                unlockAudio();
+                startGame();
+                return;
+            }
+            if (gameState === 'playing') {
+                bird.velocity = bird.jump;
+                createJumpParticles();
+            }
+            if (gameState === 'gameOver') {
+                // allow quick restart by tapping
+                restartGame();
+            }
+        }
+
+        // Touch handling for mobile
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            handleClick();
+        }, { passive: false });
+
+        // Click and keyboard
+        canvas.addEventListener('click', (e) => { handleClick(); });
         document.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 e.preventDefault();
@@ -254,51 +316,23 @@
             }
         });
 
-        function startGame() {
-            gameState = 'playing';
-            document.getElementById('startOverlay').classList.add('hidden');
-            resetGame();
-            gameLoop();
-        }
+        document.getElementById('startButton').addEventListener('click', (e) => { e.stopPropagation(); unlockAudio(); startGame(); });
+        document.getElementById('restartButton').addEventListener('click', (e) => { e.stopPropagation(); restartGame(); });
 
-        function restartGame() {
-            gameState = 'playing';
-            document.getElementById('gameOverOverlay').classList.add('hidden');
-            resetGame();
-            gameLoop();
-        }
-
-        function resetGame() {
-            bird.y = canvas.height / 2;
-            bird.velocity = 0;
-            pipes.length = 0;
-            particles.length = 0;
-            score = 0;
-            frameCount = 0;
-            document.getElementById('scoreDisplay').textContent = score;
-        }
-
-        function handleClick() {
-            if (gameState === 'playing') {
-                bird.velocity = bird.jump;
-                createJumpParticles();
-            }
-        }
-
+        // Particle helpers
         function createJumpParticles() {
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 6; i++) {
                 particles.push({
                     x: bird.x,
                     y: bird.y,
-                    vx: Math.random() * 2 - 3,
-                    vy: Math.random() * 2 + 2,
+                    vx: (Math.random() * 2 - 1) * 2,
+                    vy: Math.random() * 2 + 1,
                     life: 30,
                     size: Math.random() * 3 + 2,
                     color: `hsl(${Math.random() * 60 + 180}, 70%, 70%)`
                 });
             }
         }
-
         function createScoreParticles(x, y) {
             for (let i = 0; i < 10; i++) {
                 particles.push({
@@ -317,41 +351,29 @@
             bird.velocity += bird.gravity;
             bird.y += bird.velocity;
             bird.wingAngle += 0.3;
+            // Cap bird y so it doesn't go above screen
+            bird.y = Math.max((bird.baseHeight * bird.scale) / 2, bird.y);
         }
 
         function updatePipes() {
             frameCount++;
-
-            // Add new pipe
             if (frameCount % pipeFrequency === 0) {
-                const minHeight = 50;
-                const maxHeight = canvas.height - pipeGap - 50;
-                const height = Math.random() * (maxHeight - minHeight) + minHeight;
-
-                pipes.push({
-                    x: canvas.width,
-                    topHeight: height,
-                    bottomY: height + pipeGap,
-                    scored: false
-                });
+                const minHeight = 40;
+                const maxHeight = screen.h - pipeGap - minHeight - groundHeight;
+                const height = Math.max(minHeight, Math.random() * (Math.max(maxHeight, minHeight) - minHeight) + minHeight);
+                pipes.push({ x: screen.w, topHeight: height, bottomY: height + pipeGap, scored: false });
             }
 
-            // Move and remove pipes
             for (let i = pipes.length - 1; i >= 0; i--) {
                 pipes[i].x -= pipeSpeed;
-
-                // Check for score
+                // Score when pipe passes bird
                 if (!pipes[i].scored && pipes[i].x + pipeWidth < bird.x) {
                     pipes[i].scored = true;
                     score++;
                     document.getElementById('scoreDisplay').textContent = score;
                     createScoreParticles(bird.x + 30, bird.y);
                 }
-
-                // Remove off-screen pipes
-                if (pipes[i].x + pipeWidth < 0) {
-                    pipes.splice(i, 1);
-                }
+                if (pipes[i].x + pipeWidth < 0) pipes.splice(i, 1);
             }
         }
 
@@ -361,55 +383,51 @@
                 p.x += p.vx;
                 p.y += p.vy;
                 p.life--;
-
-                if (p.life <= 0) {
-                    particles.splice(i, 1);
-                }
+                if (p.life <= 0) particles.splice(i, 1);
             }
         }
 
         function checkCollision() {
-            const birdWidth = bird.baseWidth * bird.scale;
-            const birdHeight = bird.baseHeight * bird.scale;
-            const birdLeft = bird.x - birdWidth / 2;
-            const birdRight = bird.x + birdWidth / 2;
-            const birdTop = bird.y - birdHeight / 2;
-            const birdBottom = bird.y + birdHeight / 2;
+            const bw = bird.baseWidth * bird.scale;
+            const bh = bird.baseHeight * bird.scale;
+            const left = bird.x - bw / 2;
+            const right = bird.x + bw / 2;
+            const top = bird.y - bh / 2;
+            const bottom = bird.y + bh / 2;
 
             // Ground collision
-            if (birdBottom > canvas.height - 80) { // 80 is ground height
-                gameOver();
+            if (bottom > screen.h - groundHeight) {
+                triggerGameOver();
                 return;
             }
 
             // Pipe collision
             for (const pipe of pipes) {
-                const pipeLeft = pipe.x;
-                const pipeRight = pipe.x + pipeWidth;
-
-                // Check for overlap on X axis
-                if (birdRight > pipeLeft && birdLeft < pipeRight) {
-                    // Check for collision with top or bottom pipe
-                    if (birdTop < pipe.topHeight || birdBottom > pipe.bottomY) {
-                        gameOver();
-                        return; // Exit after first collision
+                const pLeft = pipe.x;
+                const pRight = pipe.x + pipeWidth;
+                if (right > pLeft && left < pRight) {
+                    if (top < pipe.topHeight || bottom > pipe.bottomY) {
+                        triggerGameOver();
+                        return;
                     }
                 }
             }
         }
 
-        function gameOver() {
+        function triggerGameOver() {
             if (gameState !== 'playing') return;
-
-            // Play fail sound
-            failSound.currentTime = 0; // Reset to beginning
-            failSound.play().catch(err => {
-                console.error('Failed to play sound:', err);
-            });
-
             gameState = 'gameOver';
 
-            // Update high score
+            // Play fail sound (should be unlocked after a user gesture)
+            try {
+                failSound.currentTime = 0;
+                const p = failSound.play();
+                if (p && typeof p.then === 'function') p.catch(() => {});
+            } catch (err) {
+                console.warn('Unable to play fail sound:', err);
+            }
+
+            // High score
             if (score > highScore) {
                 highScore = score;
                 localStorage.setItem('flyingBirdHighScore', highScore);
@@ -423,24 +441,51 @@
             document.getElementById('gameOverOverlay').classList.remove('hidden');
         }
 
+        function startGame() {
+            if (gameState === 'playing') return;
+            gameState = 'playing';
+            document.getElementById('startOverlay').classList.add('hidden');
+            document.getElementById('gameOverOverlay').classList.add('hidden');
+            resetGame();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function restartGame() {
+            gameState = 'playing';
+            document.getElementById('gameOverOverlay').classList.add('hidden');
+            resetGame();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function resetGame() {
+            bird.y = screen.h / 2;
+            bird.velocity = 0;
+            pipes.length = 0;
+            particles.length = 0;
+            score = 0;
+            frameCount = 0;
+            document.getElementById('scoreDisplay').textContent = score;
+        }
+
+        // Drawing
         function drawBackground() {
-            // Draw clouds
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-            for (let i = 0; i < 5; i++) {
-                const cloudX = (frameCount * 0.5 + i * 150) % (canvas.width + 100) - 50;
-                const cloudY = 50 + i * 30;
-                drawCloud(cloudX, cloudY, 40);
+            // Sky
+            ctx.fillStyle = 'linear-gradient(0, #87CEEB, #B0E0E6)';
+            // simpler solid sky so mobile gradient isn't expensive
+            ctx.fillStyle = '#98D8E8';
+            ctx.fillRect(0, 0, screen.w, screen.h);
+
+            // Clouds (light)
+            ctx.fillStyle = 'rgba(255,255,255,0.7)';
+            for (let i = 0; i < 4; i++) {
+                const cloudX = ((frameCount * 0.25) + i * 180) % (screen.w + 200) - 100;
+                const cloudY = 40 + i * 50;
+                drawCloud(cloudX, cloudY, 40 + i * 6);
             }
 
-            // Draw ground
+            // Ground
             ctx.fillStyle = '#90EE90';
-            ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
-
-            // Ground details
-            ctx.fillStyle = '#7CCD7C';
-            for (let i = 0; i < canvas.width; i += 30) {
-                ctx.fillRect(i, canvas.height - 80, 20, 10);
-            }
+            ctx.fillRect(0, screen.h - groundHeight, screen.w, groundHeight);
         }
 
         function drawCloud(x, y, size) {
@@ -454,64 +499,43 @@
         function drawBird() {
             ctx.save();
             ctx.translate(bird.x, bird.y);
-
-            // Rotate bird based on velocity
-            const rotation = Math.min(Math.max(bird.velocity * 0.05, -0.35), 0.35);
+            const rotation = Math.min(Math.max(bird.velocity * 0.04, -0.5), 0.7);
             ctx.rotate(rotation);
-
+            const width = bird.baseWidth * bird.scale;
+            const height = bird.baseHeight * bird.scale;
             if (bird.imageLoaded && bird.image) {
-                // Draw sprite with preserved aspect ratio
-                const width = bird.baseWidth * bird.scale;
-                const height = bird.baseHeight * bird.scale;
                 ctx.drawImage(bird.image, -width / 2, -height / 2, width, height);
             } else {
-                // Fallback: simple circle bird
-                const r = 25;
                 ctx.fillStyle = bird.color;
                 ctx.beginPath();
-                ctx.arc(0, 0, r, 0, Math.PI * 2);
+                ctx.arc(0, 0, Math.max(12, height / 4), 0, Math.PI * 2);
                 ctx.fill();
-
                 ctx.fillStyle = '#000';
                 ctx.beginPath();
-                ctx.arc(5, -5, 3, 0, Math.PI * 2);
+                ctx.arc(5, -5, Math.max(3, height / 20), 0, Math.PI * 2);
                 ctx.fill();
             }
-
             ctx.restore();
         }
 
         function drawPipes() {
             for (const pipe of pipes) {
-                // Top pipe
                 ctx.fillStyle = '#4CAF50';
                 ctx.fillRect(pipe.x, 0, pipeWidth, pipe.topHeight);
-
-                // Top pipe cap
                 ctx.fillStyle = '#45a049';
                 ctx.fillRect(pipe.x - 5, pipe.topHeight - 20, pipeWidth + 10, 20);
-
-                // Bottom pipe
                 ctx.fillStyle = '#4CAF50';
-                ctx.fillRect(pipe.x, pipe.bottomY, pipeWidth, canvas.height - pipe.bottomY);
-
-                // Bottom pipe cap
+                ctx.fillRect(pipe.x, pipe.bottomY, pipeWidth, screen.h - pipe.bottomY);
                 ctx.fillStyle = '#45a049';
                 ctx.fillRect(pipe.x - 5, pipe.bottomY, pipeWidth + 10, 20);
-
-                // Add pipe details
-                ctx.strokeStyle = '#2E7D32';
-                ctx.lineWidth = 2;
-                ctx.strokeRect(pipe.x + 10, 0, pipeWidth - 20, pipe.topHeight);
-                ctx.strokeRect(pipe.x + 10, pipe.bottomY, pipeWidth - 20, canvas.height - pipe.bottomY);
             }
         }
 
         function drawParticles() {
             for (const p of particles) {
-                const alpha = p.life / 40;
-                ctx.fillStyle = p.color;
+                const alpha = Math.max(0, p.life / 40);
                 ctx.globalAlpha = alpha;
+                ctx.fillStyle = p.color;
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
                 ctx.fill();
@@ -521,26 +545,27 @@
 
         function gameLoop() {
             if (gameState !== 'playing') return;
-
-            // Update
             updateBird();
             updatePipes();
             updateParticles();
             checkCollision();
-
             // Draw
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.clearRect(0, 0, screen.w, screen.h);
             drawBackground();
             drawPipes();
             drawBird();
             drawParticles();
-
             requestAnimationFrame(gameLoop);
         }
 
-        // Draw initial frame
+        // Initial render
         drawBackground();
         drawBird();
+
+        // Helpful note: put your custom fail sound in the existing `audio/` folder (there is already audio/fail.wav).
+        // Put a replacement bird image at `images/bird.png` if you want a different bird sprite. Use an image around
+        // 200x200 px for best results and the script will scale it.
+
     </script>
 </body>
 </html>
